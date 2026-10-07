@@ -13,6 +13,7 @@ import {
   ReviseTaskDto,
 } from './dto/office.dto.js';
 import { AGENT_TEMPLATES, AgentTemplate } from './agent-templates.js';
+import { PresenceService } from '../presence/presence.service.js';
 
 export { CreateAgentDto, UpdateAgentDto, CreateTaskDto, ReviseTaskDto };
 
@@ -20,6 +21,7 @@ export { CreateAgentDto, UpdateAgentDto, CreateTaskDto, ReviseTaskDto };
 export class OfficeService {
   constructor(
     private readonly db: PrismaService,
+    private readonly presence: PresenceService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {}
 

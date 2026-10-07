@@ -74,6 +74,8 @@ model AgentPresence {
   status        AgentPresenceStatus @default(IDLE)
   location      AgentLocation       @default(DESK)
   currentTaskId String?
+  bubbleText    String?
+  bubbleType    String?             @default("IDLE")
   updatedAt     DateTime            @updatedAt
 }
 

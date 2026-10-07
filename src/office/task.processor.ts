@@ -4,6 +4,7 @@ import { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LlmService } from '../llm/llm.service.js';
 import { ScheduleService } from '../schedule/schedule.service.js';
+import { PresenceService } from '../presence/presence.service.js';
 import { parseAgentEnvelope, AgentEnvelope } from './task-envelope.js';
 
 @Processor('office-tasks', { concurrency: 3 })
@@ -14,6 +15,7 @@ export class TaskProcessor extends WorkerHost {
     private readonly db: PrismaService,
     private readonly llm: LlmService,
     private readonly schedule: ScheduleService,
+    private readonly presence: PresenceService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {
     super();
@@ -45,19 +47,12 @@ export class TaskProcessor extends WorkerHost {
         `[Schedule Guard] Agent ${agent.name} ditunda: ${state.summary} (Status Kantor: ${state.status})`,
       );
 
-      // 1. Update status presence agent sesuai kondisi (PRAYING di MUSHOLA, RESTING di LAPANGAN, dll)
-      await this.db.agentPresence.upsert({
-        where: { agentId: agent.id },
-        create: {
-          agentId: agent.id,
-          status: state.suggestedPresence.status,
-          location: state.suggestedPresence.location,
-          currentTaskId: task.id,
-        },
-        update: {
-          status: state.suggestedPresence.status,
-          location: state.suggestedPresence.location,
-        },
+      // 1. Update status presence agent & balon dialog sesuai jadwal (PRAYING di MUSHOLA, RESTING di LAPANGAN, dll)
+      await this.presence.updatePresence(agent.id, {
+        status: state.suggestedPresence.status,
+        location: state.suggestedPresence.location,
+        currentTaskId: task.id,
+        blockName: state.activeBlock?.name,
       });
 
       // 2. Re-queue task dengan delay sampai jendela kerja berikutnya
@@ -82,25 +77,25 @@ export class TaskProcessor extends WorkerHost {
       };
     }
 
-    // 1. Update status task -> RUNNING & agent presence -> WORKING di DESK
+    // 1. Update status task -> RUNNING & agent presence -> WORKING di DESK (dengan balon dialog thinking)
     await this.db.task.update({
       where: { id: task.id },
       data: { status: 'RUNNING' },
     });
 
-    await this.db.agentPresence.upsert({
-      where: { agentId: agent.id },
-      create: {
-        agentId: agent.id,
-        status: 'WORKING',
-        location: 'DESK',
-        currentTaskId: task.id,
-      },
-      update: {
-        status: 'WORKING',
-        location: 'DESK',
-        currentTaskId: task.id,
-      },
+    await this.presence.updatePresence(agent.id, {
+      status: 'WORKING',
+      location: 'DESK',
+      currentTaskId: task.id,
+      taskTitle: task.title,
+    });
+
+    this.presence.broadcastTaskUpdated({
+      id: task.id,
+      title: task.title,
+      status: 'RUNNING',
+      agentId: agent.id,
+      priority: task.priority,
     });
 
     const startTime = Date.now();
@@ -178,7 +173,6 @@ export class TaskProcessor extends WorkerHost {
       if (envelope.status === 'NEEDS_INFO' || envelope.status === 'BLOCKED' || envelope.status === 'CANNOT_DO') {
         nextStatus = 'BLOCKED';
       } else {
-        // Jika status DONE, cek apakah perlu review (QA / Owner)
         const needsReview = task.needsReview || envelope.confidence < 0.5;
         nextStatus = needsReview ? 'REVIEW' : 'DONE';
       }
@@ -241,24 +235,33 @@ export class TaskProcessor extends WorkerHost {
         },
       });
 
-      // 8. Kembalikan kehadiran agent ke IDLE di meja
-      await this.db.agentPresence.upsert({
-        where: { agentId: agent.id },
-        create: {
-          agentId: agent.id,
-          status: 'IDLE',
-          location: 'DESK',
-          currentTaskId: null,
-        },
-        update: {
-          status: 'IDLE',
-          location: 'DESK',
-          currentTaskId: null,
-        },
+      // 8. Broadcast event task.updated dan run.finished ke client SSE
+      this.presence.broadcastRunFinished({
+        taskId: task.id,
+        agentId: agent.id,
+        model: r.model || 'default',
+        totalTokens: r.usage?.total_tokens ?? null,
+        latencyMs,
+        status: nextStatus === 'BLOCKED' ? 'BLOCKED' : 'SUCCESS',
+      });
+
+      this.presence.broadcastTaskUpdated({
+        id: task.id,
+        title: task.title,
+        status: nextStatus,
+        agentId: agent.id,
+        priority: task.priority,
+      });
+
+      // 9. Kembalikan kehadiran agent ke IDLE di meja & broadcast ke SSE
+      await this.presence.updatePresence(agent.id, {
+        status: 'IDLE',
+        location: 'DESK',
+        currentTaskId: null,
       });
 
       this.logger.log(
-        `[Worker] Task ${taskId} selesai -> status: ${nextStatus} (${latencyMs}ms, total tokens: ${r.usage?.total_tokens ?? 'N/A'})`,
+        `[Worker] Task ${taskId} selesai -> status: ${nextStatus} (${latencyMs}ms, tokens: ${r.usage?.total_tokens ?? 'N/A'})`,
       );
       return { status: nextStatus, summary: envelope.summary };
     } catch (err: any) {
@@ -289,20 +292,19 @@ export class TaskProcessor extends WorkerHost {
         },
       });
 
+      this.presence.broadcastTaskUpdated({
+        id: task.id,
+        title: task.title,
+        status: 'FAILED',
+        agentId: agent.id,
+        priority: task.priority,
+      });
+
       // Kembalikan presence agen ke IDLE
-      await this.db.agentPresence.upsert({
-        where: { agentId: agent.id },
-        create: {
-          agentId: agent.id,
-          status: 'IDLE',
-          location: 'DESK',
-          currentTaskId: null,
-        },
-        update: {
-          status: 'IDLE',
-          location: 'DESK',
-          currentTaskId: null,
-        },
+      await this.presence.updatePresence(agent.id, {
+        status: 'IDLE',
+        location: 'DESK',
+        currentTaskId: null,
       });
 
       throw err;

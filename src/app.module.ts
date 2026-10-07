@@ -9,6 +9,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { OfficeModule } from './office/office.module.js';
 import { HealthModule } from './health/health.module.js';
 import { ScheduleModule } from './schedule/schedule.module.js';
+import { PresenceModule } from './presence/presence.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -34,6 +35,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     OfficeModule,
     HealthModule,
     ScheduleModule,
+    PresenceModule,
   ],
   controllers: [AppController],
   providers: [AppService],
