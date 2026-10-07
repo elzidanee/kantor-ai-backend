@@ -55,15 +55,12 @@ export class OfficeService {
           },
         });
 
-        // Inisialisasi presence agent di meja
-        await this.db.agentPresence.upsert({
-          where: { agentId: agent.id },
-          create: {
-            agentId: agent.id,
-            status: 'IDLE',
-            location: 'DESK',
-          },
-          update: {},
+        // Inisialisasi presence agent di meja dengan balon perkenalan
+        await this.presence.updatePresence(agent.id, {
+          status: 'IDLE',
+          location: 'DESK',
+          bubbleText: 'Siap bekerja dan membantu kantor!',
+          bubbleType: 'IDLE',
         });
       }
       created.push(agent);
@@ -89,13 +86,12 @@ export class OfficeService {
       },
     });
 
-    // Inisialisasi presence agent di meja (IDLE)
-    await this.db.agentPresence.create({
-      data: {
-        agentId: agent.id,
-        status: 'IDLE',
-        location: 'DESK',
-      },
+    // Inisialisasi presence agent di meja (IDLE) dengan balon dialog
+    await this.presence.updatePresence(agent.id, {
+      status: 'IDLE',
+      location: 'DESK',
+      bubbleText: 'Halo! Aku baru bergabung di tim kantor.',
+      bubbleType: 'IDLE',
     });
 
     return this.getAgent(agent.id);
@@ -151,9 +147,11 @@ export class OfficeService {
       data: { active: false },
     });
 
-    await this.db.agentPresence.update({
-      where: { agentId: id },
-      data: { status: 'OFFLINE' },
+    await this.presence.updatePresence(id, {
+      status: 'OFFLINE',
+      location: 'DESK',
+      bubbleText: 'Status dinonaktifkan...',
+      bubbleType: 'OFFLINE',
     });
 
     return { success: true, message: `Agent ${id} berhasil dinonaktifkan` };
@@ -181,7 +179,16 @@ export class OfficeService {
       include: { agent: true },
     });
 
-    // 2. Masukkan ke antrean BullMQ (retry up to 3x dengan backoff)
+    // 2. Broadcast event task.updated ke seluruh client SSE
+    this.presence.broadcastTaskUpdated({
+      id: task.id,
+      title: task.title,
+      status: 'QUEUED',
+      agentId: task.agentId,
+      priority: task.priority,
+    });
+
+    // 3. Masukkan ke antrean BullMQ (retry up to 3x dengan backoff)
     await this.taskQueue.add(
       'process-task',
       { taskId: task.id },
@@ -248,6 +255,15 @@ export class OfficeService {
       include: { agent: true },
     });
 
+    // Broadcast update status DONE ke SSE
+    this.presence.broadcastTaskUpdated({
+      id: updated.id,
+      title: updated.title,
+      status: 'DONE',
+      agentId: updated.agentId,
+      priority: updated.priority,
+    });
+
     return updated;
   }
 
@@ -273,6 +289,15 @@ export class OfficeService {
         finishedAt: null,
       },
       include: { agent: true },
+    });
+
+    // Broadcast update status QUEUED ke SSE
+    this.presence.broadcastTaskUpdated({
+      id: updated.id,
+      title: updated.title,
+      status: 'QUEUED',
+      agentId: updated.agentId,
+      priority: updated.priority,
     });
 
     // Masukkan kembali ke antrean BullMQ

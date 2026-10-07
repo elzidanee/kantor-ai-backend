@@ -30,9 +30,21 @@ export class PresenceService {
   ) {}
 
   async getPresences() {
-    return this.db.agentPresence.findMany({
+    const presences = await this.db.agentPresence.findMany({
       include: { agent: true },
       orderBy: { agent: { deskIndex: 'asc' } },
+    });
+
+    return presences.map((p) => {
+      if (!p.bubbleText) {
+        const gen = generateBubbleDialog(p.status);
+        return {
+          ...p,
+          bubbleText: gen.bubbleText,
+          bubbleType: gen.bubbleType,
+        };
+      }
+      return p;
     });
   }
 
