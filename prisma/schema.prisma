@@ -141,6 +141,8 @@ model OfficeSettings {
   dailyRunLimit   Int?     @default(100)
   dailyTokenLimit Int?     @default(200000)
   maxConcurrency  Int      @default(3)
+  isPaused        Boolean  @default(false)
+  isOvertime      Boolean  @default(false)
   updatedAt       DateTime @updatedAt
 }
 

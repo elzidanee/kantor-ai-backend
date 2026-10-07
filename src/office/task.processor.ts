@@ -1,8 +1,9 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LlmService } from '../llm/llm.service.js';
+import { ScheduleService } from '../schedule/schedule.service.js';
 import { parseAgentEnvelope, AgentEnvelope } from './task-envelope.js';
 
 @Processor('office-tasks', { concurrency: 3 })
@@ -12,6 +13,8 @@ export class TaskProcessor extends WorkerHost {
   constructor(
     private readonly db: PrismaService,
     private readonly llm: LlmService,
+    private readonly schedule: ScheduleService,
+    @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {
     super();
   }
@@ -34,6 +37,50 @@ export class TaskProcessor extends WorkerHost {
     }
 
     const { agent } = task;
+
+    // ==================== SCHEDULE GUARD ====================
+    const { canWork, state } = await this.schedule.canAgentWork();
+    if (!canWork) {
+      this.logger.warn(
+        `[Schedule Guard] Agent ${agent.name} ditunda: ${state.summary} (Status Kantor: ${state.status})`,
+      );
+
+      // 1. Update status presence agent sesuai kondisi (PRAYING di MUSHOLA, RESTING di LAPANGAN, dll)
+      await this.db.agentPresence.upsert({
+        where: { agentId: agent.id },
+        create: {
+          agentId: agent.id,
+          status: state.suggestedPresence.status,
+          location: state.suggestedPresence.location,
+          currentTaskId: task.id,
+        },
+        update: {
+          status: state.suggestedPresence.status,
+          location: state.suggestedPresence.location,
+        },
+      });
+
+      // 2. Re-queue task dengan delay sampai jendela kerja berikutnya
+      const delayMs = Math.max(10_000, state.delayMs);
+      await this.taskQueue.add(
+        'process-task',
+        { taskId: task.id },
+        {
+          delay: delayMs,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: 100,
+          removeOnFail: 200,
+        },
+      );
+
+      return {
+        status: 'DELAYED_BY_SCHEDULE',
+        officeStatus: state.status,
+        delayMs,
+        reason: state.summary,
+      };
+    }
 
     // 1. Update status task -> RUNNING & agent presence -> WORKING di DESK
     await this.db.task.update({
