@@ -1,0 +1,149 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+enum TaskStatus {
+  PENDING
+  QUEUED
+  RUNNING
+  REVIEW
+  DONE
+  FAILED
+  BLOCKED
+}
+
+enum AgentPresenceStatus {
+  WORKING
+  IDLE
+  STANDUP
+  PRAYING
+  RESTING
+  TOILET
+  OFFLINE
+}
+
+enum AgentLocation {
+  DESK
+  STANDUP_AREA
+  MUSHOLA
+  TOILET
+  LAPANGAN
+}
+
+enum ScheduleBlockType {
+  STANDUP
+  PRAYER
+  MEAL
+  BREAK
+  OTHER
+}
+
+model Agent {
+  id           String               @id @default(cuid())
+  name         String
+  role         String
+  jobdesk      String
+  systemPrompt String?
+  model        String?
+  temperature  Float?               @default(0.7)
+  maxTokens    Int?                 @default(800)
+  color        String?              @default("#3B82F6")
+  deskIndex    Int?                 @default(0)
+  active       Boolean              @default(true)
+  createdAt    DateTime             @default(now())
+  tasks        Task[]
+  taskRuns     TaskRun[]
+  presence     AgentPresence?
+}
+
+model AgentPresence {
+  agentId       String              @id
+  agent         Agent               @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  status        AgentPresenceStatus @default(IDLE)
+  location      AgentLocation       @default(DESK)
+  currentTaskId String?
+  updatedAt     DateTime            @updatedAt
+}
+
+model Goal {
+  id        String   @id @default(cuid())
+  text      String
+  status    String   @default("ACTIVE")
+  createdBy String?
+  createdAt DateTime @default(now())
+  tasks     Task[]
+}
+
+model Task {
+  id            String       @id @default(cuid())
+  goalId        String?
+  goal          Goal?        @relation(fields: [goalId], references: [id])
+  agentId       String
+  agent         Agent        @relation(fields: [agentId], references: [id])
+  title         String
+  description   String
+  priority      TaskPriority @default(NORMAL)
+  status        TaskStatus   @default(PENDING)
+  dependsOn     String[]     @default([])
+  result        String?
+  error         String?
+  revisionCount Int          @default(0)
+  modelUsed     String?
+  totalTokens   Int?
+  dueAt         DateTime?
+  createdAt     DateTime     @default(now())
+  finishedAt    DateTime?
+  runs          TaskRun[]
+}
+
+model TaskRun {
+  id               String   @id @default(cuid())
+  taskId           String
+  task             Task     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  agentId          String
+  agent            Agent    @relation(fields: [agentId], references: [id])
+  model            String
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+  latencyMs        Int?
+  status           String   @default("SUCCESS")
+  error            String?
+  createdAt        DateTime @default(now())
+}
+
+model OfficeSettings {
+  id              String   @id @default("default")
+  timezone        String   @default("Asia/Jakarta")
+  workDays        String[] @default(["senin", "selasa", "rabu", "kamis", "jumat"])
+  workStart       String   @default("08:00")
+  workEnd         String   @default("17:00")
+  routerBaseUrl   String?
+  routerApiKeyEnc String?
+  defaultModel    String?
+  dailyRunLimit   Int?     @default(100)
+  dailyTokenLimit Int?     @default(200000)
+  maxConcurrency  Int      @default(3)
+  updatedAt       DateTime @updatedAt
+}
+
+model ScheduleBlock {
+  id        String            @id @default(cuid())
+  name      String
+  type      ScheduleBlockType
+  startTime String
+  endTime   String
+  agentId   String?
+}
