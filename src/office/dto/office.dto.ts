@@ -102,6 +102,10 @@ export class CreateTaskDto {
   agentId!: string;
 
   @IsString()
+  @IsOptional()
+  goalId?: string;
+
+  @IsString()
   @IsNotEmpty()
   title!: string;
 

@@ -80,16 +80,23 @@ model AgentPresence {
 }
 
 model Goal {
-  id        String   @id @default(cuid())
-  text      String
-  status    String   @default("ACTIVE")
-  createdBy String?
-  createdAt DateTime @default(now())
-  tasks     Task[]
+  id             String    @id @default(cuid())
+  title          String?
+  text           String
+  status         String    @default("PLANNING")
+  classification String?
+  summary        String?
+  assumptions    String[]  @default([])
+  openQuestions  String[]  @default([])
+  createdBy      String?   @default("owner")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  tasks          Task[]
 }
 
 model Task {
   id                 String       @id @default(cuid())
+  taskKey            String?
   goalId             String?
   goal               Goal?        @relation(fields: [goalId], references: [id])
   agentId            String
@@ -97,6 +104,7 @@ model Task {
   title              String
   description        String
   acceptanceCriteria String[]     @default([])
+  deliverableType    String?      @default("TEXT")
   priority           TaskPriority @default(NORMAL)
   status             TaskStatus   @default(PENDING)
   dependsOn          String[]     @default([])
@@ -112,6 +120,17 @@ model Task {
   createdAt          DateTime     @default(now())
   finishedAt         DateTime?
   runs               TaskRun[]
+}
+
+model ActivityLog {
+  id          String   @id @default(cuid())
+  timestamp   DateTime @default(now())
+  eventType   String
+  agentId     String?
+  taskId      String?
+  goalId      String?
+  description String
+  metadata    Json?
 }
 
 model TaskRun {

@@ -5,6 +5,9 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { LlmService } from '../llm/llm.service.js';
 import { ScheduleService } from '../schedule/schedule.service.js';
 import { PresenceService } from '../presence/presence.service.js';
+import { QuotaService } from '../quota/quota.service.js';
+import { GoalService } from '../goal/goal.service.js';
+import { ActivityLogService } from '../activity/activity-log.service.js';
 import { parseAgentEnvelope, AgentEnvelope } from './task-envelope.js';
 
 @Processor('office-tasks', { concurrency: 3 })
@@ -16,6 +19,9 @@ export class TaskProcessor extends WorkerHost {
     private readonly llm: LlmService,
     private readonly schedule: ScheduleService,
     private readonly presence: PresenceService,
+    private readonly quota: QuotaService,
+    private readonly goal: GoalService,
+    private readonly activityLog: ActivityLogService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {
     super();
@@ -74,6 +80,37 @@ export class TaskProcessor extends WorkerHost {
         officeStatus: state.status,
         delayMs,
         reason: state.summary,
+      };
+    }
+
+    // ==================== QUOTA GUARD ====================
+    const quotaCheck = await this.quota.checkQuota();
+    if (!quotaCheck.allowed) {
+      this.logger.warn(`[Quota Guard] Agent ${agent.name} ditunda: ${quotaCheck.reason}`);
+
+      await this.presence.updatePresence(agent.id, {
+        status: 'IDLE',
+        location: 'DESK',
+        bubbleText: 'Kuota harian kantor telah habis...',
+        bubbleType: 'WAITING',
+      });
+
+      // Tunda 60 detik sebelum coba lagi
+      await this.taskQueue.add(
+        'process-task',
+        { taskId: task.id },
+        {
+          delay: 60_000,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 2000 },
+          removeOnComplete: 100,
+          removeOnFail: 200,
+        },
+      );
+
+      return {
+        status: 'DELAYED_BY_QUOTA',
+        reason: quotaCheck.reason,
       };
     }
 
@@ -138,63 +175,68 @@ export class TaskProcessor extends WorkerHost {
         `Deskripsi: ${task.description}`,
       ];
 
+      // Masukkan Kriteria Penerimaan jika ada
       if (task.acceptanceCriteria && task.acceptanceCriteria.length > 0) {
         userPromptParts.push(
-          `KRITERIA PENERIMAAN (Acceptance Criteria):\n- ${task.acceptanceCriteria.join('\n- ')}`,
+          `KRITERIA PENERIMAAN:\n` +
+            task.acceptanceCriteria.map((c, i) => `${i + 1}. ${c}`).join('\n'),
         );
       }
 
-      if (task.revisionNotes) {
+      // Masukkan Konteks Target (Goal) jika ada
+      if (task.goal) {
+        userPromptParts.push(`TARGET UTAMA: ${task.goal.text}`);
+      }
+
+      // Masukkan Catatan Revisi jika ini putaran revisi
+      if (task.revisionCount > 0 && task.revisionNotes) {
         userPromptParts.push(
-          `CATATAN REVISI (Putaran ke-${task.revisionCount}):\nPerbaiki temuan berikut:\n${task.revisionNotes}`,
+          `CATATAN REVISI SEBELUMNYA (Putaran ke-${task.revisionCount}):\n${task.revisionNotes}\nMohon perbaiki kekurangan sesuai catatan di atas.`,
         );
-        if (task.result) {
-          userPromptParts.push(
-            `HASIL SEBELUMNYA SEBAGAI ACUAN:\n${task.result.slice(0, 1000)}`,
-          );
-        }
       }
 
       const userPrompt = userPromptParts.join('\n\n');
 
-      // 3. Panggil LLM via LlmService
+      // 3. Eksekusi LLM melalui gateway
       const r = await this.llm.chat(
         systemPrompt,
         userPrompt,
-        3, // maxAttempts
+        3,
       );
+
       const latencyMs = Date.now() - startTime;
 
-      // 4. Parse amplop hasil JSON
+      // 4. Parsing amplop JSON keluaran agent
       const envelope: AgentEnvelope = parseAgentEnvelope(r.text);
 
-      // 5. Tentukan status akhir task berdasarkan logic mesin status
+      // 5. Tentukan status akhir task berdasarkan logicagent.md
       let nextStatus: 'DONE' | 'REVIEW' | 'BLOCKED' = 'DONE';
-      if (envelope.status === 'NEEDS_INFO' || envelope.status === 'BLOCKED' || envelope.status === 'CANNOT_DO') {
+
+      if (envelope.status === 'BLOCKED' || envelope.status === 'CANNOT_DO' || envelope.status === 'NEEDS_INFO') {
         nextStatus = 'BLOCKED';
+      } else if (task.needsReview) {
+        nextStatus = 'REVIEW';
+      } else if (envelope.confidence !== undefined && envelope.confidence < 0.5) {
+        nextStatus = 'REVIEW';
       } else {
-        const needsReview = task.needsReview || envelope.confidence < 0.5;
-        nextStatus = needsReview ? 'REVIEW' : 'DONE';
+        nextStatus = 'DONE';
       }
 
-      // Format teks hasil agar ramah dibaca manusia
-      const deliverableTexts = envelope.deliverables
-        .map((d) => `### [${d.type}] ${d.name}\n${d.content}`)
+      // Format teks human-readable gabungan untuk kolom result
+      const deliverableTexts = (envelope.deliverables || [])
+        .map((d) => `### ${d.name} (${d.type})\n${d.content}`)
         .join('\n\n');
 
-      const assumptionsText = envelope.assumptions.length
-        ? `\n\n**Asumsi:**\n- ${envelope.assumptions.join('\n- ')}`
+      const criteriaCheckText = (envelope.criteria_check || [])
+        .map((c) => `- [${c.met ? 'x' : ' '}] ${c.criterion}${c.note ? ` (${c.note})` : ''}`)
+        .join('\n');
+
+      const assumptionsText = (envelope.assumptions || []).length
+        ? `\n\n**Asumsi:**\n` + envelope.assumptions.map((a) => `- ${a}`).join('\n')
         : '';
 
-      const questionsText = envelope.open_questions.length
-        ? `\n\n**Pertanyaan / Informasi yang dibutuhkan:**\n- ${envelope.open_questions.join('\n- ')}`
-        : '';
-
-      const criteriaCheckText = envelope.criteria_check.length
-        ? `\n\n**Pemeriksaan Kriteria:**\n` +
-          envelope.criteria_check
-            .map((c) => `- [${c.met ? 'x' : ' '}] ${c.criterion}${c.note ? ` (${c.note})` : ''}`)
-            .join('\n')
+      const questionsText = (envelope.open_questions || []).length
+        ? `\n\n**Pertanyaan Terbuka:**\n` + envelope.open_questions.map((q) => `- ${q}`).join('\n')
         : '';
 
       const humanResult = [
@@ -260,6 +302,20 @@ export class TaskProcessor extends WorkerHost {
         currentTaskId: null,
       });
 
+      // 10. Jika status selesai 'DONE', picu Dependency Resolver untuk membuka task berikutnya
+      if (nextStatus === 'DONE') {
+        await this.goal.resolveDependencies(task.id);
+      }
+
+      await this.activityLog.log({
+        eventType: 'TASK_LIFECYCLE',
+        taskId: task.id,
+        goalId: task.goalId,
+        agentId: agent.id,
+        description: `Task "${task.title}" selesai dengan status ${nextStatus} (${latencyMs}ms, ${r.usage?.total_tokens ?? 0} tokens)`,
+        metadata: { latencyMs, tokens: r.usage?.total_tokens, status: nextStatus },
+      });
+
       this.logger.log(
         `[Worker] Task ${taskId} selesai -> status: ${nextStatus} (${latencyMs}ms, tokens: ${r.usage?.total_tokens ?? 'N/A'})`,
       );
@@ -305,6 +361,15 @@ export class TaskProcessor extends WorkerHost {
         status: 'IDLE',
         location: 'DESK',
         currentTaskId: null,
+      });
+
+      await this.activityLog.log({
+        eventType: 'TASK_LIFECYCLE',
+        taskId: task.id,
+        goalId: task.goalId,
+        agentId: agent.id,
+        description: `Task "${task.title}" gagal: ${errorMsg}`,
+        metadata: { error: errorMsg },
       });
 
       throw err;

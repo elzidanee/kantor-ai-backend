@@ -14,6 +14,8 @@ import {
 } from './dto/office.dto.js';
 import { AGENT_TEMPLATES, AgentTemplate } from './agent-templates.js';
 import { PresenceService } from '../presence/presence.service.js';
+import { GoalService } from '../goal/goal.service.js';
+import { ActivityLogService } from '../activity/activity-log.service.js';
 
 export { CreateAgentDto, UpdateAgentDto, CreateTaskDto, ReviseTaskDto };
 
@@ -22,6 +24,8 @@ export class OfficeService {
   constructor(
     private readonly db: PrismaService,
     private readonly presence: PresenceService,
+    private readonly goal: GoalService,
+    private readonly activityLog: ActivityLogService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {}
 
@@ -168,6 +172,7 @@ export class OfficeService {
     const task = await this.db.task.create({
       data: {
         agentId: dto.agentId,
+        goalId: dto.goalId ?? null,
         title: dto.title,
         description: dto.description,
         acceptanceCriteria: dto.acceptanceCriteria ?? [],
@@ -202,6 +207,13 @@ export class OfficeService {
         removeOnFail: 200,
       },
     );
+
+    await this.activityLog.log({
+      eventType: 'TASK_LIFECYCLE',
+      taskId: task.id,
+      agentId: task.agentId,
+      description: `Task baru dibuat: "${task.title}"`,
+    });
 
     return task;
   }
@@ -264,6 +276,16 @@ export class OfficeService {
       priority: updated.priority,
     });
 
+    // Jalankan Dependency Resolver jika ada task turunan yang menunggu
+    await this.goal.resolveDependencies(updated.id);
+
+    await this.activityLog.log({
+      eventType: 'REVIEW_ACTION',
+      taskId: updated.id,
+      agentId: updated.agentId,
+      description: `Owner menyetujui hasil task "${updated.title}" (Status -> DONE)`,
+    });
+
     return updated;
   }
 
@@ -314,6 +336,13 @@ export class OfficeService {
         removeOnFail: 200,
       },
     );
+
+    await this.activityLog.log({
+      eventType: 'REVIEW_ACTION',
+      taskId: updated.id,
+      agentId: updated.agentId,
+      description: `Owner meminta revisi ke-${nextRevisionCount} untuk task "${updated.title}": "${dto.feedback}"`,
+    });
 
     return updated;
   }

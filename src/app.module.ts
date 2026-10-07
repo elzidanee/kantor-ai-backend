@@ -10,6 +10,10 @@ import { OfficeModule } from './office/office.module.js';
 import { HealthModule } from './health/health.module.js';
 import { ScheduleModule } from './schedule/schedule.module.js';
 import { PresenceModule } from './presence/presence.module.js';
+import { ActivityModule } from './activity/activity.module.js';
+import { QuotaModule } from './quota/quota.module.js';
+import { StatsModule } from './stats/stats.module.js';
+import { GoalModule } from './goal/goal.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -36,6 +40,10 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     HealthModule,
     ScheduleModule,
     PresenceModule,
+    ActivityModule,
+    QuotaModule,
+    StatsModule,
+    GoalModule,
   ],
   controllers: [AppController],
   providers: [AppService],
