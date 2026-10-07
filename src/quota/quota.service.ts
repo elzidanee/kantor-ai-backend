@@ -52,8 +52,8 @@ export class QuotaService {
       }),
     ]);
 
-    const tokenLimit = settings?.dailyTokenLimit ?? 200_000;
-    const runLimit = settings?.dailyRunLimit ?? 100;
+    const tokenLimit = 999_999_999; // Unlimited token quota
+    const runLimit = 999_999;       // Unlimited run quota
     const tokensToday = tokenAgg._sum.totalTokens ?? 0;
 
     const tokenPercent = Math.min(100, Math.round((tokensToday / tokenLimit) * 100));
@@ -71,29 +71,7 @@ export class QuotaService {
 
   async checkQuota(): Promise<QuotaCheckResult> {
     const usage = await this.getTodayUsage();
-
-    if (usage.tokensToday >= usage.tokenLimit) {
-      const reason = `Batas token harian (${usage.tokensToday.toLocaleString('id-ID')} / ${usage.tokenLimit.toLocaleString('id-ID')}) telah terlampaui`;
-      this.logger.warn(`[Quota Guard] ${reason}`);
-      await this.activityLog.log({
-        eventType: 'QUOTA_EXCEEDED',
-        description: reason,
-        metadata: usage,
-      });
-      return { allowed: false, reason, usage };
-    }
-
-    if (usage.runsToday >= usage.runLimit) {
-      const reason = `Batas total run harian (${usage.runsToday} / ${usage.runLimit}) telah terlampaui`;
-      this.logger.warn(`[Quota Guard] ${reason}`);
-      await this.activityLog.log({
-        eventType: 'QUOTA_EXCEEDED',
-        description: reason,
-        metadata: usage,
-      });
-      return { allowed: false, reason, usage };
-    }
-
+    // Kuota Tak Terbatas (Unlimited): Selalu diizinkan (allowed: true)
     return { allowed: true, usage };
   }
 }
