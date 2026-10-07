@@ -1,72 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { IsArray, IsIn, IsNotEmpty, IsNumber, IsOptional, IsString, Max, Min } from 'class-validator';
 import { PrismaService } from '../prisma/prisma.service.js';
+import {
+  CreateAgentDto,
+  UpdateAgentDto,
+  CreateTaskDto,
+  ReviseTaskDto,
+} from './dto/office.dto.js';
+import { AGENT_TEMPLATES, AgentTemplate } from './agent-templates.js';
 
-export class CreateAgentDto {
-  @IsString()
-  @IsNotEmpty()
-  name!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  role!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  jobdesk!: string;
-
-  @IsString()
-  @IsOptional()
-  systemPrompt?: string;
-
-  @IsString()
-  @IsOptional()
-  model?: string;
-
-  @IsNumber()
-  @IsOptional()
-  @Min(0)
-  @Max(2)
-  temperature?: number;
-
-  @IsNumber()
-  @IsOptional()
-  @Min(1)
-  maxTokens?: number;
-
-  @IsString()
-  @IsOptional()
-  color?: string;
-
-  @IsNumber()
-  @IsOptional()
-  deskIndex?: number;
-}
-
-export class CreateTaskDto {
-  @IsString()
-  @IsNotEmpty()
-  agentId!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  title!: string;
-
-  @IsString()
-  @IsNotEmpty()
-  description!: string;
-
-  @IsIn(['LOW', 'NORMAL', 'HIGH'])
-  @IsOptional()
-  priority?: 'LOW' | 'NORMAL' | 'HIGH';
-
-  @IsArray()
-  @IsString({ each: true })
-  @IsOptional()
-  dependsOn?: string[];
-}
+export { CreateAgentDto, UpdateAgentDto, CreateTaskDto, ReviseTaskDto };
 
 @Injectable()
 export class OfficeService {
@@ -74,6 +22,54 @@ export class OfficeService {
     private readonly db: PrismaService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {}
+
+  // ===================== AGENT TEMPLATES & DEFAULT TEAM =====================
+
+  getTemplates(): AgentTemplate[] {
+    return AGENT_TEMPLATES;
+  }
+
+  async initDefaultAgents() {
+    const created = [];
+    for (const t of AGENT_TEMPLATES) {
+      // Periksa apakah agent dengan nama/role ini sudah ada
+      let agent = await this.db.agent.findFirst({
+        where: { name: t.name },
+      });
+
+      if (!agent) {
+        agent = await this.db.agent.create({
+          data: {
+            name: t.name,
+            role: t.role,
+            jobdesk: t.jobdesk,
+            systemPrompt: t.systemPrompt,
+            model: t.model,
+            temperature: t.temperature ?? 0.7,
+            maxTokens: t.maxTokens ?? 800,
+            color: t.color,
+            deskIndex: t.deskIndex,
+            active: true,
+          },
+        });
+
+        // Inisialisasi presence agent di meja
+        await this.db.agentPresence.upsert({
+          where: { agentId: agent.id },
+          create: {
+            agentId: agent.id,
+            status: 'IDLE',
+            location: 'DESK',
+          },
+          update: {},
+        });
+      }
+      created.push(agent);
+    }
+    return this.listAgents();
+  }
+
+  // ===================== AGENT CRUD =====================
 
   async createAgent(dto: CreateAgentDto) {
     const agent = await this.db.agent.create({
@@ -87,10 +83,11 @@ export class OfficeService {
         maxTokens: dto.maxTokens ?? 800,
         color: dto.color ?? '#3B82F6',
         deskIndex: dto.deskIndex ?? 0,
+        active: true,
       },
     });
 
-    // Inisialisasi presence agen di meja (IDLE)
+    // Inisialisasi presence agent di meja (IDLE)
     await this.db.agentPresence.create({
       data: {
         agentId: agent.id,
@@ -114,17 +111,58 @@ export class OfficeService {
     return agent;
   }
 
-  listAgents() {
+  listAgents(includeInactive = false) {
     return this.db.agent.findMany({
+      where: includeInactive ? undefined : { active: true },
       include: { presence: true },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { deskIndex: 'asc' },
     });
   }
 
+  async updateAgent(id: string, dto: UpdateAgentDto) {
+    await this.getAgent(id); // Pastikan ada
+
+    return this.db.agent.update({
+      where: { id },
+      data: {
+        name: dto.name,
+        role: dto.role,
+        jobdesk: dto.jobdesk,
+        systemPrompt: dto.systemPrompt,
+        model: dto.model,
+        temperature: dto.temperature,
+        maxTokens: dto.maxTokens,
+        color: dto.color,
+        deskIndex: dto.deskIndex,
+        active: dto.active,
+      },
+      include: { presence: true },
+    });
+  }
+
+  async deleteAgent(id: string) {
+    await this.getAgent(id);
+
+    // Soft delete: set active = false dan status presence = OFFLINE
+    await this.db.agent.update({
+      where: { id },
+      data: { active: false },
+    });
+
+    await this.db.agentPresence.update({
+      where: { agentId: id },
+      data: { status: 'OFFLINE' },
+    });
+
+    return { success: true, message: `Agent ${id} berhasil dinonaktifkan` };
+  }
+
+  // ===================== TASK MANAGEMENT =====================
+
   async createTask(dto: CreateTaskDto) {
-    // Validasi agen
     const agent = await this.db.agent.findUnique({ where: { id: dto.agentId } });
     if (!agent) throw new NotFoundException(`Agent ${dto.agentId} tidak ditemukan`);
+    if (!agent.active) throw new BadRequestException(`Agent ${dto.agentId} sedang tidak aktif`);
 
     // 1. Simpan task dengan status QUEUED
     const task = await this.db.task.create({
@@ -132,14 +170,16 @@ export class OfficeService {
         agentId: dto.agentId,
         title: dto.title,
         description: dto.description,
+        acceptanceCriteria: dto.acceptanceCriteria ?? [],
         priority: dto.priority ?? 'NORMAL',
         dependsOn: dto.dependsOn ?? [],
+        needsReview: dto.needsReview ?? false,
         status: 'QUEUED',
       },
       include: { agent: true },
     });
 
-    // 2. Masukkan ke antrean BullMQ (retry up to 3x with backoff)
+    // 2. Masukkan ke antrean BullMQ (retry up to 3x dengan backoff)
     await this.taskQueue.add(
       'process-task',
       { taskId: task.id },
@@ -154,7 +194,6 @@ export class OfficeService {
       },
     );
 
-    // 3. Response cepat dan non-blocking
     return task;
   }
 
@@ -163,6 +202,7 @@ export class OfficeService {
       where: { id },
       include: {
         agent: true,
+        goal: true,
         runs: { orderBy: { createdAt: 'desc' } },
       },
     });
@@ -174,6 +214,7 @@ export class OfficeService {
     return this.db.task.findMany({
       include: {
         agent: true,
+        goal: true,
         runs: { orderBy: { createdAt: 'desc' } },
       },
       orderBy: { createdAt: 'desc' },
@@ -185,5 +226,68 @@ export class OfficeService {
       where: { taskId },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  // ===================== REVIEW & REVISION FLOW (FR-T7) =====================
+
+  async approveTask(id: string) {
+    const task = await this.getTask(id);
+
+    if (task.status === 'DONE') {
+      return task; // Sudah selesai
+    }
+
+    const updated = await this.db.task.update({
+      where: { id },
+      data: {
+        status: 'DONE',
+        finishedAt: new Date(),
+      },
+      include: { agent: true },
+    });
+
+    return updated;
+  }
+
+  async reviseTask(id: string, dto: ReviseTaskDto) {
+    const task = await this.getTask(id);
+
+    // Batasan PRD & logicagent.md: Maksimal 2 putaran revisi
+    if (task.revisionCount >= 2) {
+      throw new BadRequestException(
+        `Batas maksimal 2 putaran revisi telah tercapai untuk task ${id}. Silakan buat task baru atau eskalasi ke Owner.`,
+      );
+    }
+
+    const nextRevisionCount = task.revisionCount + 1;
+
+    // Update status task kembali ke QUEUED dengan catatan revisi
+    const updated = await this.db.task.update({
+      where: { id },
+      data: {
+        status: 'QUEUED',
+        revisionCount: nextRevisionCount,
+        revisionNotes: dto.feedback,
+        finishedAt: null,
+      },
+      include: { agent: true },
+    });
+
+    // Masukkan kembali ke antrean BullMQ
+    await this.taskQueue.add(
+      'process-task',
+      { taskId: task.id },
+      {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      },
+    );
+
+    return updated;
   }
 }

@@ -3,35 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { LlmService } from '../llm/llm.service.js';
-
-type Envelope = {
-  status: 'DONE' | 'NEEDS_INFO';
-  result: string;
-  assumptions: string[];
-  questions: string[];
-};
-
-function parseEnvelope(text: string): Envelope {
-  try {
-    const s = text.indexOf('{');
-    const e = text.lastIndexOf('}');
-    if (s === -1 || e === -1 || e <= s) throw new Error('No JSON object found');
-    const j = JSON.parse(text.slice(s, e + 1));
-    return {
-      status: j.status === 'NEEDS_INFO' ? 'NEEDS_INFO' : 'DONE',
-      result: String(j.result ?? ''),
-      assumptions: Array.isArray(j.assumptions) ? j.assumptions.map(String) : [],
-      questions: Array.isArray(j.questions) ? j.questions.map(String) : [],
-    };
-  } catch {
-    return {
-      status: 'DONE',
-      result: text.trim(),
-      assumptions: ['Format balasan tidak sesuai JSON envelope, teks mentah disimpan'],
-      questions: [],
-    };
-  }
-}
+import { parseAgentEnvelope, AgentEnvelope } from './task-envelope.js';
 
 @Processor('office-tasks', { concurrency: 3 })
 export class TaskProcessor extends WorkerHost {
@@ -46,11 +18,14 @@ export class TaskProcessor extends WorkerHost {
 
   async process(job: Job<{ taskId: string }>): Promise<any> {
     const { taskId } = job.data;
-    this.logger.log(`Memproses task ${taskId} (Job ID: ${job.id})`);
+    this.logger.log(`[Worker] Memproses task ${taskId} (Job ID: ${job.id})`);
 
     const task = await this.db.task.findUnique({
       where: { id: taskId },
-      include: { agent: true },
+      include: {
+        agent: true,
+        goal: true,
+      },
     });
 
     if (!task) {
@@ -60,7 +35,7 @@ export class TaskProcessor extends WorkerHost {
 
     const { agent } = task;
 
-    // Update task ke RUNNING & agent presence ke WORKING
+    // 1. Update status task -> RUNNING & agent presence -> WORKING di DESK
     await this.db.task.update({
       where: { id: task.id },
       data: { status: 'RUNNING' },
@@ -84,31 +59,114 @@ export class TaskProcessor extends WorkerHost {
     const startTime = Date.now();
 
     try {
-      const system = [
-        `Kamu adalah ${agent.name}, ${agent.role}.`,
-        `Jobdesk: ${agent.jobdesk}`,
-        agent.systemPrompt ? `Instruksi tambahan: ${agent.systemPrompt}` : '',
-        `Aturan kerja:`,
-        `- Kerjakan tugas sekarang. Jika ada detail kecil yang kurang (misalnya nama merek atau periode), gunakan placeholder seperti [NAMA BRAND] atau asumsi yang wajar, lalu tulis asumsinya di "assumptions".`,
-        `- Gunakan status NEEDS_INFO hanya jika tugas mustahil dikerjakan tanpa jawaban dari owner.`,
-        `- Jangan mengarang fakta, angka, atau sumber.`,
-        `- Gunakan bahasa Indonesia.`,
-        `Balas hanya dengan satu objek JSON tanpa teks lain dan tanpa markdown, dengan format:`,
-        `{"status":"DONE atau NEEDS_INFO","result":"hasil kerja","assumptions":["..."],"questions":["..."]}`,
+      // 2. Susun Konteks Prompt sesuai aturan logicagent.md
+      const systemPrompt = [
+        `Kamu adalah ${agent.name}, ${agent.role} di Kantor AI.`,
+        `JOBDESK:`,
+        agent.jobdesk,
+        agent.systemPrompt ? `PANDUAN PERAN:\n${agent.systemPrompt}` : '',
+        `ATURAN KERJA WAJIB:`,
+        `- Kerjakan tugas sesuai jobdesk dan peranmu.`,
+        `- Jika informasi inti tidak tersedia, jangan menebak. Isi "open_questions" dan set status "NEEDS_INFO".`,
+        `- Jangan mengarang angka atau fakta.`,
+        `- Penuhi seluruh kriteria penerimaan jika ada.`,
+        `- Gunakan bahasa Indonesia baku dan profesional.`,
+        `FORMAT KELUARAN WAJIB:`,
+        `Balas HANYA dengan SATU objek JSON tanpa markdown dan tanpa teks pembuka/penutup, dengan format amplop:`,
+        `{`,
+        `  "status": "DONE" | "NEEDS_INFO" | "BLOCKED" | "CANNOT_DO",`,
+        `  "summary": "Ringkasan hasil kerja 1-2 kalimat",`,
+        `  "deliverables": [`,
+        `    { "type": "CODE" | "TEXT" | "CONFIG", "name": "nama_file_atau_judul", "content": "isi lengkap hasil" }`,
+        `  ],`,
+        `  "criteria_check": [`,
+        `    { "criterion": "nama kriteria", "met": true, "note": "catatan pemenuhan" }`,
+        `  ],`,
+        `  "assumptions": ["asumsi yang dipakai bila ada"],`,
+        `  "open_questions": ["pertanyaan ke owner jika butuh info"],`,
+        `  "handoff": { "to_role": "QA", "note": "catatan untuk peran berikutnya" },`,
+        `  "confidence": 0.9`,
+        `}`,
       ]
         .filter(Boolean)
-        .join('\n');
+        .join('\n\n');
 
-      const r = await this.llm.chat(system, `${task.title}\n\n${task.description}`);
+      const userPromptParts: string[] = [
+        `# TUGAS: ${task.title}`,
+        `Deskripsi: ${task.description}`,
+      ];
+
+      if (task.acceptanceCriteria && task.acceptanceCriteria.length > 0) {
+        userPromptParts.push(
+          `KRITERIA PENERIMAAN (Acceptance Criteria):\n- ${task.acceptanceCriteria.join('\n- ')}`,
+        );
+      }
+
+      if (task.revisionNotes) {
+        userPromptParts.push(
+          `CATATAN REVISI (Putaran ke-${task.revisionCount}):\nPerbaiki temuan berikut:\n${task.revisionNotes}`,
+        );
+        if (task.result) {
+          userPromptParts.push(
+            `HASIL SEBELUMNYA SEBAGAI ACUAN:\n${task.result.slice(0, 1000)}`,
+          );
+        }
+      }
+
+      const userPrompt = userPromptParts.join('\n\n');
+
+      // 3. Panggil LLM via LlmService
+      const r = await this.llm.chat(
+        systemPrompt,
+        userPrompt,
+        3, // maxAttempts
+      );
       const latencyMs = Date.now() - startTime;
-      const env = parseEnvelope(r.text);
-      const blocked = env.status === 'NEEDS_INFO';
 
-      const body = blocked
-        ? `Butuh informasi dari owner:\n- ${env.questions.join('\n- ')}`
-        : env.result + (env.assumptions.length ? `\n\nAsumsi:\n- ${env.assumptions.join('\n- ')}` : '');
+      // 4. Parse amplop hasil JSON
+      const envelope: AgentEnvelope = parseAgentEnvelope(r.text);
 
-      // Catat riwayat eksekusi ke task_runs
+      // 5. Tentukan status akhir task berdasarkan logic mesin status
+      let nextStatus: 'DONE' | 'REVIEW' | 'BLOCKED' = 'DONE';
+      if (envelope.status === 'NEEDS_INFO' || envelope.status === 'BLOCKED' || envelope.status === 'CANNOT_DO') {
+        nextStatus = 'BLOCKED';
+      } else {
+        // Jika status DONE, cek apakah perlu review (QA / Owner)
+        const needsReview = task.needsReview || envelope.confidence < 0.5;
+        nextStatus = needsReview ? 'REVIEW' : 'DONE';
+      }
+
+      // Format teks hasil agar ramah dibaca manusia
+      const deliverableTexts = envelope.deliverables
+        .map((d) => `### [${d.type}] ${d.name}\n${d.content}`)
+        .join('\n\n');
+
+      const assumptionsText = envelope.assumptions.length
+        ? `\n\n**Asumsi:**\n- ${envelope.assumptions.join('\n- ')}`
+        : '';
+
+      const questionsText = envelope.open_questions.length
+        ? `\n\n**Pertanyaan / Informasi yang dibutuhkan:**\n- ${envelope.open_questions.join('\n- ')}`
+        : '';
+
+      const criteriaCheckText = envelope.criteria_check.length
+        ? `\n\n**Pemeriksaan Kriteria:**\n` +
+          envelope.criteria_check
+            .map((c) => `- [${c.met ? 'x' : ' '}] ${c.criterion}${c.note ? ` (${c.note})` : ''}`)
+            .join('\n')
+        : '';
+
+      const humanResult = [
+        envelope.summary,
+        deliverableTexts,
+        criteriaCheckText,
+        assumptionsText,
+        questionsText,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+
+      // 6. Simpan TaskRun ke database
       await this.db.taskRun.create({
         data: {
           taskId: task.id,
@@ -118,38 +176,51 @@ export class TaskProcessor extends WorkerHost {
           completionTokens: r.usage?.completion_tokens ?? null,
           totalTokens: r.usage?.total_tokens ?? null,
           latencyMs,
-          status: blocked ? 'BLOCKED' : 'SUCCESS',
+          status: nextStatus === 'BLOCKED' ? 'BLOCKED' : 'SUCCESS',
+          envelope: envelope as any,
         },
       });
 
-      // Update hasil task
+      // 7. Update Task dengan hasil amplop dan status
       await this.db.task.update({
         where: { id: task.id },
         data: {
-          status: blocked ? 'BLOCKED' : 'DONE',
-          result: body,
+          status: nextStatus,
+          result: humanResult,
+          outputEnvelope: envelope as any,
           modelUsed: r.model,
           totalTokens: r.usage?.total_tokens ?? null,
-          finishedAt: blocked ? null : new Date(),
+          finishedAt: nextStatus === 'DONE' ? new Date() : null,
         },
       });
 
-      // Kembalikan presence agen ke IDLE
+      // 8. Kembalikan kehadiran agent ke IDLE di meja
       await this.db.agentPresence.upsert({
         where: { agentId: agent.id },
-        create: { agentId: agent.id, status: 'IDLE', location: 'DESK', currentTaskId: null },
-        update: { status: 'IDLE', currentTaskId: null },
+        create: {
+          agentId: agent.id,
+          status: 'IDLE',
+          location: 'DESK',
+          currentTaskId: null,
+        },
+        update: {
+          status: 'IDLE',
+          location: 'DESK',
+          currentTaskId: null,
+        },
       });
 
-      this.logger.log(`Task ${taskId} selesai dengan status ${blocked ? 'BLOCKED' : 'DONE'} (${latencyMs}ms)`);
-      return { status: blocked ? 'BLOCKED' : 'DONE' };
-    } catch (e: any) {
+      this.logger.log(
+        `[Worker] Task ${taskId} selesai -> status: ${nextStatus} (${latencyMs}ms, total tokens: ${r.usage?.total_tokens ?? 'N/A'})`,
+      );
+      return { status: nextStatus, summary: envelope.summary };
+    } catch (err: any) {
       const latencyMs = Date.now() - startTime;
-      const errorMsg = String(e.message || e).slice(0, 1000);
+      const errorMsg = String(err.message || err).slice(0, 1000);
 
-      this.logger.error(`Task ${taskId} gagal: ${errorMsg}`);
+      this.logger.error(`[Worker] Task ${taskId} gagal: ${errorMsg}`);
 
-      // Catat kegagalan ke task_runs
+      // Catat kegagalan ke TaskRun
       await this.db.taskRun.create({
         data: {
           taskId: task.id,
@@ -161,6 +232,7 @@ export class TaskProcessor extends WorkerHost {
         },
       });
 
+      // Update status task ke FAILED
       await this.db.task.update({
         where: { id: task.id },
         data: {
@@ -170,13 +242,23 @@ export class TaskProcessor extends WorkerHost {
         },
       });
 
+      // Kembalikan presence agen ke IDLE
       await this.db.agentPresence.upsert({
         where: { agentId: agent.id },
-        create: { agentId: agent.id, status: 'IDLE', location: 'DESK', currentTaskId: null },
-        update: { status: 'IDLE', currentTaskId: null },
+        create: {
+          agentId: agent.id,
+          status: 'IDLE',
+          location: 'DESK',
+          currentTaskId: null,
+        },
+        update: {
+          status: 'IDLE',
+          location: 'DESK',
+          currentTaskId: null,
+        },
       });
 
-      throw e;
+      throw err;
     }
   }
 }

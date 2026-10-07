@@ -87,25 +87,29 @@ model Goal {
 }
 
 model Task {
-  id            String       @id @default(cuid())
-  goalId        String?
-  goal          Goal?        @relation(fields: [goalId], references: [id])
-  agentId       String
-  agent         Agent        @relation(fields: [agentId], references: [id])
-  title         String
-  description   String
-  priority      TaskPriority @default(NORMAL)
-  status        TaskStatus   @default(PENDING)
-  dependsOn     String[]     @default([])
-  result        String?
-  error         String?
-  revisionCount Int          @default(0)
-  modelUsed     String?
-  totalTokens   Int?
-  dueAt         DateTime?
-  createdAt     DateTime     @default(now())
-  finishedAt    DateTime?
-  runs          TaskRun[]
+  id                 String       @id @default(cuid())
+  goalId             String?
+  goal               Goal?        @relation(fields: [goalId], references: [id])
+  agentId            String
+  agent              Agent        @relation(fields: [agentId], references: [id])
+  title              String
+  description        String
+  acceptanceCriteria String[]     @default([])
+  priority           TaskPriority @default(NORMAL)
+  status             TaskStatus   @default(PENDING)
+  dependsOn          String[]     @default([])
+  needsReview        Boolean      @default(false)
+  result             String?
+  outputEnvelope     Json?
+  error              String?
+  revisionCount      Int          @default(0)
+  revisionNotes      String?
+  modelUsed          String?
+  totalTokens        Int?
+  dueAt              DateTime?
+  createdAt          DateTime     @default(now())
+  finishedAt         DateTime?
+  runs               TaskRun[]
 }
 
 model TaskRun {
@@ -121,6 +125,7 @@ model TaskRun {
   latencyMs        Int?
   status           String   @default("SUCCESS")
   error            String?
+  envelope         Json?
   createdAt        DateTime @default(now())
 }
 
