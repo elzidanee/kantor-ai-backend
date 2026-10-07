@@ -20,34 +20,34 @@ export class ScheduleController {
 
   // ===================== SETTINGS =====================
 
-  @Get('settings')
+  @Get(['settings', 'work-schedule/settings'])
   getSettings() {
     return this.schedule.getSettings();
   }
 
-  @Put('settings')
+  @Put(['settings', 'work-schedule/settings'])
   updateSettings(@Body() body: UpdateOfficeSettingsDto) {
     return this.schedule.updateSettings(body);
   }
 
   // ===================== SCHEDULE BLOCKS =====================
 
-  @Get('schedule-blocks')
+  @Get(['schedule-blocks', 'work-schedule/blocks'])
   getScheduleBlocks() {
     return this.schedule.getScheduleBlocks();
   }
 
-  @Post('schedule-blocks')
+  @Post(['schedule-blocks', 'work-schedule/blocks'])
   createScheduleBlock(@Body() body: CreateScheduleBlockDto) {
     return this.schedule.createScheduleBlock(body);
   }
 
-  @Post('schedule-blocks/init-default')
+  @Post(['schedule-blocks/init-default', 'work-schedule/blocks/init-default'])
   initDefaultScheduleBlocks() {
     return this.schedule.initDefaultScheduleBlocks();
   }
 
-  @Put('schedule-blocks/:id')
+  @Put(['schedule-blocks/:id', 'work-schedule/blocks/:id'])
   updateScheduleBlock(
     @Param('id') id: string,
     @Body() body: UpdateScheduleBlockDto,
@@ -55,7 +55,7 @@ export class ScheduleController {
     return this.schedule.updateScheduleBlock(id, body);
   }
 
-  @Delete('schedule-blocks/:id')
+  @Delete(['schedule-blocks/:id', 'work-schedule/blocks/:id'])
   deleteScheduleBlock(@Param('id') id: string) {
     return this.schedule.deleteScheduleBlock(id);
   }
