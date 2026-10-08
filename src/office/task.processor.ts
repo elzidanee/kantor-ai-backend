@@ -8,6 +8,7 @@ import { PresenceService } from '../presence/presence.service.js';
 import { QuotaService } from '../quota/quota.service.js';
 import { GoalService } from '../goal/goal.service.js';
 import { ActivityLogService } from '../activity/activity-log.service.js';
+import { LocalFilesService } from '../local-files/local-files.service.js';
 import { parseAgentEnvelope, AgentEnvelope } from './task-envelope.js';
 
 @Processor('office-tasks', { concurrency: 3 })
@@ -22,6 +23,7 @@ export class TaskProcessor extends WorkerHost {
     private readonly quota: QuotaService,
     private readonly goal: GoalService,
     private readonly activityLog: ActivityLogService,
+    private readonly localFiles: LocalFilesService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {
     super();
@@ -166,6 +168,9 @@ export class TaskProcessor extends WorkerHost {
         `- Gunakan asumsi profesional terbaik untuk melengkapi detail teknis/kreatif dan cantumkan di field "assumptions".`,
         `- JANGAN isi "open_questions" jika tugas sudah selesai. Kosongkan menjadi: "open_questions": [].`,
         `- "status" WAJIB "DONE".`,
+        `KEMAMPUAN FILE & DIREKTORI LOKAL:`,
+        `- Sistem ini memiliki akses pembaca file & struktur direktori lokal riil. Jika terdapat data atau cuplikan file lokal yang dilampirkan, jadikan data tersebut sebagai referensi utama yang akurat.`,
+        `- DILARANG mengatakan "saya tidak punya akses ke file lokal" jika data file lokal telah disediakan di dalam konteks tugas.`,
         `FORMAT KELUARAN WAJIB:`,
         `Balas HANYA dengan SATU objek JSON tanpa awalan/akhiran markdown di luar JSON:`,
         `{`,
@@ -190,6 +195,14 @@ export class TaskProcessor extends WorkerHost {
         `# TUGAS: ${task.title}`,
         `Deskripsi: ${task.description}`,
       ];
+
+      // Masukkan Deteksi Otomatis Pembacaan File Lokal jika deskripsi atau judul menyebutkan file/path lokal
+      const detectedLocalFiles = this.localFiles.detectAndExtractFileContext(
+        `${task.title}\n${task.description}`,
+      );
+      if (detectedLocalFiles) {
+        userPromptParts.push(detectedLocalFiles);
+      }
 
       // Masukkan Kriteria Penerimaan jika ada
       if (task.acceptanceCriteria && task.acceptanceCriteria.length > 0) {

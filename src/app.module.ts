@@ -14,6 +14,8 @@ import { ActivityModule } from './activity/activity.module.js';
 import { QuotaModule } from './quota/quota.module.js';
 import { StatsModule } from './stats/stats.module.js';
 import { GoalModule } from './goal/goal.module.js';
+import { LocalFilesModule } from './local-files/local-files.module.js';
+import { AutomationModule } from './automation/automation.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -44,6 +46,8 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     QuotaModule,
     StatsModule,
     GoalModule,
+    LocalFilesModule,
+    AutomationModule,
   ],
   controllers: [AppController],
   providers: [AppService],
