@@ -18,7 +18,7 @@ export class PresenceBroadcaster {
 
   getStream(initialEvents: SsePayload[] = []): Observable<MessageEvent> {
     // 1. Initial snapshot stream
-    const snapshot$ = new Observable<SsePayload>((subscriber) => {
+    const snapshot$ = new Observable<SsePayload>((subscriber: any) => {
       for (const ev of initialEvents) {
         subscriber.next(ev);
       }
@@ -35,7 +35,7 @@ export class PresenceBroadcaster {
 
     // 3. Gabungkan snapshot awal, event broadcast realtime, dan heartbeat
     return merge(snapshot$, this.events$, heartbeat$).pipe(
-      map((item) => ({
+      map((item: any) => ({
         type: item.type,
         data: item.data,
       })),

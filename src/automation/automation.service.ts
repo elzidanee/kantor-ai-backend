@@ -31,9 +31,9 @@ export interface AutomationConfig {
   createdAt: string;
 }
 
-export interface RunAutomationDto {
-  recipeKey: string;
-  targetDirectory: string;
+export class RunAutomationDto {
+  recipeKey!: string;
+  targetDirectory!: string;
   filePaths?: string[];
   customPrompt?: string;
   agentId?: string;
