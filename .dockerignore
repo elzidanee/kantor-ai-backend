@@ -5,3 +5,12 @@ dist
 .env.*
 npm-debug.log
 pnpm-debug.log
+scratch
+.agents
+.claude
+.windsurf
+.gemini
+coverage
+test
+*.md
+!README.md

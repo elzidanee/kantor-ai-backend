@@ -8,6 +8,8 @@ import { LocalFilesService } from '../local-files/local-files.service.js';
 import { PresenceService } from '../presence/presence.service.js';
 import { ActivityLogService } from '../activity/activity-log.service.js';
 
+import { IsString, IsOptional, IsArray } from 'class-validator';
+
 export interface AutomationPreset {
   key: string;
   name: string;
@@ -32,11 +34,26 @@ export interface AutomationConfig {
 }
 
 export class RunAutomationDto {
+  @IsString()
   recipeKey!: string;
+
+  @IsString()
   targetDirectory!: string;
+
+  @IsArray()
+  @IsOptional()
   filePaths?: string[];
+
+  @IsString()
+  @IsOptional()
   customPrompt?: string;
+
+  @IsString()
+  @IsOptional()
   agentId?: string;
+
+  @IsString()
+  @IsOptional()
   title?: string;
 }
 

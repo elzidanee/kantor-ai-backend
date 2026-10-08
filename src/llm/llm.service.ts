@@ -58,13 +58,20 @@ export class LlmService {
 
   private fromStream(raw: string): Parsed {
     let text = '', model = '', finish: string | undefined, usage: any;
-    for (const line of raw.split('\n')) {
-      if (!line.startsWith('data: ') || line.includes('[DONE]')) continue;
-      const c = JSON.parse(line.slice(6));
-      model = c.model ?? model;
-      text += c.choices?.[0]?.delta?.content ?? '';
-      finish = c.choices?.[0]?.finish_reason ?? finish;
-      usage = c.usage ?? usage;
+    for (const rawLine of raw.split('\n')) {
+      const line = rawLine.trim();
+      if (!line.startsWith('data:') || line.includes('[DONE]')) continue;
+      const jsonStr = line.replace(/^data:\s*/, '').trim();
+      if (!jsonStr) continue;
+      try {
+        const c = JSON.parse(jsonStr);
+        model = c.model ?? model;
+        text += c.choices?.[0]?.delta?.content ?? c.choices?.[0]?.message?.content ?? '';
+        finish = c.choices?.[0]?.finish_reason ?? finish;
+        usage = c.usage ?? usage;
+      } catch {
+        // Skip malformed chunk
+      }
     }
     return { text, model, usage, finish };
   }
