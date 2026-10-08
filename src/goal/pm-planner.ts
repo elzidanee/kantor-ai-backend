@@ -97,20 +97,22 @@ export function buildTriagePrompt(goalText: string, activeAgents: { name: string
 Tugasmu adalah melakukan Triage Intake terhadap target atau permintaan Owner.
 
 KATEGORI TRIAGE:
-- STATUS_QUERY: Owner hanya bertanya status ("sudah sampai mana?")
-- SINGLE_TASK: Target sederhana yang bisa diselesaikan satu peran saja
+- SINGLE_TASK: Target yang bisa diselesaikan satu peran saja
 - MULTI_TASK: Target yang membutuhkan kolaborasi beberapa peran secara berurutan atau paralel
-- AMBIGUOUS: Informasi inti belum jelas, perlu klarifikasi (nama produk, tujuan utama, atau batasan kritis)
-- OUT_OF_SCOPE: Di luar kemampuan kantor (akses produksi, bayar iklan nyata, kirim email fisik)
+- STATUS_QUERY: Owner hanya bertanya status ("sudah sampai mana?")
+- OUT_OF_SCOPE: Di luar kemampuan kantor (akses fisik, kirim uang nyata)
 - UNSAFE: Berbahaya, ilegal, atau melanggar etika
+- AMBIGUOUS: HANYA jika teks target benar-benar tidak jelas sama sekali (misal hanya 1-2 kata seperti "halo", "tes", atau kosong)
 
 DAFTAR AGENT AKTIF DI KANTOR:
 ${agentListText}
 
-ATURAN KLARIFIKASI:
-- Hanya pilih AMBIGUOUS jika informasi benar-benar vital tidak diketahui.
-- Maksimal 3 pertanyaan klarifikasi, bernomor dan to-the-point.
-- Jika bisa diasumsikan dengan aman, pilih MULTI_TASK atau SINGLE_TASK dengan asumsi tertulis.
+PRINSIP EKSEKUSI & PROAKTIF (SANGAT PENTING):
+1. DILARANG MEMINTA KLARIFIKASI JIKA INFORMASI SUDAH CUKUP ATAU BISA DIASUMSIKAN SECARA LOGIS!
+2. Jika sudah ada konteks atau instruksi umum, LANGSUNG PILIH "MULTI_TASK" ATAU "SINGLE_TASK" dan pecah tugasnya untuk dikerjakan langsung.
+3. Jangan pernah menanyakan preferensi kecil seperti warna, harga, nama variabel, atau copy format ke Owner. Buat asumsi profesional terbaik sendiri!
+4. "needs_owner_approval_before_start" WAJIB false.
+5. "clarification_questions" biarkan kosong [] kecuali benar-benar AMBIGUOUS total.
 
 FORMAT KELUARAN WAJIB:
 Balas HANYA dengan SATU objek JSON tanpa markdown dan tanpa teks pembuka/penutup:
@@ -118,10 +120,10 @@ Balas HANYA dengan SATU objek JSON tanpa markdown dan tanpa teks pembuka/penutup
   "category": "SINGLE_TASK" | "MULTI_TASK" | "AMBIGUOUS" | "STATUS_QUERY" | "OUT_OF_SCOPE" | "UNSAFE",
   "summary": "Ringkasan target 1 kalimat",
   "roles_needed": ["FRONTEND", "BACKEND", "QA", dll],
-  "missing_info": ["info penting jika ada"],
+  "missing_info": [],
   "risk": "LOW" | "MEDIUM" | "HIGH",
   "needs_owner_approval_before_start": false,
-  "clarification_questions": ["Pertanyaan 1 jika AMBIGUOUS"]
+  "clarification_questions": []
 }`,
     userPrompt: `Teks Target Owner:\n"${goalText}"`,
   };

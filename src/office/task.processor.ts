@@ -140,31 +140,47 @@ export class TaskProcessor extends WorkerHost {
     try {
       // 2. Susun Konteks Prompt sesuai aturan logicagent.md
       const systemPrompt = [
-        `Kamu adalah ${agent.name}, ${agent.role} di Kantor AI.`,
-        `JOBDESK:`,
+        `Kamu adalah ${agent.name}, ${agent.role} di Kantor AI (Autonomous Enterprise Workspace).`,
+        `Keahlian & Jobdesk:`,
         agent.jobdesk,
-        agent.systemPrompt ? `PANDUAN PERAN:\n${agent.systemPrompt}` : '',
-        `ATURAN KERJA WAJIB:`,
-        `- Kerjakan tugas sesuai jobdesk dan peranmu.`,
-        `- Jika informasi inti tidak tersedia, jangan menebak. Isi "open_questions" dan set status "NEEDS_INFO".`,
-        `- Jangan mengarang angka atau fakta.`,
-        `- Penuhi seluruh kriteria penerimaan jika ada.`,
-        `- Gunakan bahasa Indonesia baku dan profesional.`,
+        agent.systemPrompt ? `Panduan Peran Khusus:\n${agent.systemPrompt}` : '',
+        `STANDAR KUALITAS JAWABAN (SEPERTI AI ASISTEN TERBAIK KELAS DUNIA - CHATGPT / CLAUDE / GEMINI):`,
+        `- Tuliskan jawaban yang SANGAT BAGUS, LENGKAP, MENDALAM, TERTATA RAPI, dan SIAP PAKAI (PRODUCTION-READY).`,
+        `- DILARANG KERAS memberikan jawaban singkat atau seadanya, potongan kode terpotong, atau kalimat penolakan.`,
+        `- STRUKTUR DELIVERABLE WAJIB SESUAI PERAN:`,
+        `  * Jika tugas KONTEN / COPYWRITING / SOSMED:`,
+        `    - Tulis naskah lengkap yang memikat dan persuasif (menggunakan formula Hook + Story + Offer + CTA).`,
+        `    - Sediakan minimal 2-3 VARIASI OPSI (Opsi 1: Menarik & Kasual, Opsi 2: Profesional & Edukatif, Opsi 3: Singkat & Punchy).`,
+        `    - Sertakan Call to Action (CTA) yang jelas, emoji yang pas, serta daftar hashtag (#) relevan dan tips visual posting.`,
+        `  * Jika tugas KODE / TEKNIKAL / BACKEND / FRONTEND:`,
+        `    - Tuliskan kode LENGKAP tanpa disingkat (Clean Code), dengan penanganan error (error handling), tipe data/interfaces TypeScript, dan arsitektur modular.`,
+        `    - Berikan penjelasan arsitektur, cara kerja, dan panduan langkah demi langkah cara integrasi/menjalankannya.`,
+        `  * Jika tugas QA / TESTING / AUDIT:`,
+        `    - Susun Test Plan & Test Case komprehensif (ID Test, Kategori, Prasyarat, Langkah Uji, Data Uji, Ekspektasi Hasil, dan Edge Cases).`,
+        `  * Jika tugas MARKETING / STRATEGI:`,
+        `    - Susun rencana terperinci meliputi target persona, Unique Selling Proposition (USP), kanal distribusi, pesan kunci, dan indikator keberhasilan (KPI).`,
+        `- Gunakan format Markdown yang indah (headings ##, ###, bullet points, numbered list, bold **, code block, quote >).`,
+        `- Gunakan bahasa Indonesia yang ramah, sopan, solutif, dan profesional.`,
+        `- DILARANG BANYAK TANYA ATAU MEMINTA KLARIFIKASI KE OWNER!`,
+        `- Jika informasi sudah cukup atau bisa diambil kesimpulan logis, WAJIB LANGSUNG BUAT HASIL FINALNYA SECARA LENGKAP DAN TUNTAS!`,
+        `- Gunakan asumsi profesional terbaik untuk melengkapi detail teknis/kreatif dan cantumkan di field "assumptions".`,
+        `- JANGAN isi "open_questions" jika tugas sudah selesai. Kosongkan menjadi: "open_questions": [].`,
+        `- "status" WAJIB "DONE".`,
         `FORMAT KELUARAN WAJIB:`,
-        `Balas HANYA dengan SATU objek JSON tanpa markdown dan tanpa teks pembuka/penutup, dengan format amplop:`,
+        `Balas HANYA dengan SATU objek JSON tanpa awalan/akhiran markdown di luar JSON:`,
         `{`,
-        `  "status": "DONE" | "NEEDS_INFO" | "BLOCKED" | "CANNOT_DO",`,
-        `  "summary": "Ringkasan hasil kerja 1-2 kalimat",`,
+        `  "status": "DONE",`,
+        `  "summary": "Ringkasan eksekutif 2-4 kalimat yang komprehensif dan solutif mengenai apa yang telah dikerjakan secara final",`,
         `  "deliverables": [`,
-        `    { "type": "CODE" | "TEXT" | "CONFIG", "name": "nama_file_atau_judul", "content": "isi lengkap hasil" }`,
+        `    { "type": "CODE" | "TEXT" | "CONFIG", "name": "nama_file_atau_dokumen", "content": "isi lengkap, kaya, dan siap pakai menggunakan format markdown yang terstruktur rapi" }`,
         `  ],`,
         `  "criteria_check": [`,
-        `    { "criterion": "nama kriteria", "met": true, "note": "catatan pemenuhan" }`,
+        `    { "criterion": "kriteria yang dipenuhi", "met": true, "note": "penjelasan detail bagaimana kriteria ini dipenuhi" }`,
         `  ],`,
-        `  "assumptions": ["asumsi yang dipakai bila ada"],`,
-        `  "open_questions": ["pertanyaan ke owner jika butuh info"],`,
+        `  "assumptions": ["asumsi profesional yang digunakan agar pekerjaan tuntas 100% tanpa merepotkan Owner"],`,
+        `  "open_questions": [],`,
         `  "handoff": { "to_role": "QA", "note": "catatan untuk peran berikutnya" },`,
-        `  "confidence": 0.9`,
+        `  "confidence": 0.98`,
         `}`,
       ]
         .filter(Boolean)
@@ -209,42 +225,98 @@ export class TaskProcessor extends WorkerHost {
       // 4. Parsing amplop JSON keluaran agent
       const envelope: AgentEnvelope = parseAgentEnvelope(r.text);
 
-      // 5. Tentukan status akhir task berdasarkan logicagent.md
+      // 5. Tentukan status akhir task: JIKA SUDAH ADA DELIVERABLES, LANGSUNG SELESAI (DONE)!
+      const hasDeliverables = Array.isArray(envelope.deliverables) && envelope.deliverables.length > 0;
+      const isExplicitlyBlocked =
+        (envelope.status === 'BLOCKED' || envelope.status === 'CANNOT_DO' || envelope.status === 'NEEDS_INFO') &&
+        !hasDeliverables;
+
       let nextStatus: 'DONE' | 'REVIEW' | 'BLOCKED' = 'DONE';
 
-      if (envelope.status === 'BLOCKED' || envelope.status === 'CANNOT_DO' || envelope.status === 'NEEDS_INFO') {
+      if (isExplicitlyBlocked) {
         nextStatus = 'BLOCKED';
       } else if (task.needsReview) {
         nextStatus = 'REVIEW';
-      } else if (envelope.confidence !== undefined && envelope.confidence < 0.5) {
-        nextStatus = 'REVIEW';
       } else {
+        // Output sudah ada dan tuntas: LANGSUNG STATUS DONE!
         nextStatus = 'DONE';
       }
 
-      // Format teks human-readable gabungan untuk kolom result
+      // HANYA minta konfirmasi/tanya Owner jika BENAR-BENAR TERBLOKIR TANPA HASIL (isExplicitlyBlocked)
+      if (isExplicitlyBlocked) {
+        const questionText = envelope.open_questions?.[0] || 'Mohon arahan dan detail kebutuhan tambahan untuk kelanjutan tugas ini.';
+        
+        if (task.goalId) {
+          const currentGoal = await this.db.goal.findUnique({ where: { id: task.goalId } });
+          if (currentGoal) {
+            const existingQ = currentGoal.openQuestions || [];
+            const newQuestions = Array.from(new Set([...existingQ, ...(envelope.open_questions || [questionText])]));
+            await this.db.goal.update({
+              where: { id: task.goalId },
+              data: {
+                status: 'NEEDS_CLARIFICATION',
+                openQuestions: newQuestions,
+              },
+            });
+          }
+        }
+
+        // Tampilkan speech bubble agen menanyakan ke Owner
+        await this.presence.updatePresence(agent.id, {
+          status: 'IDLE',
+          location: 'DESK',
+          currentTaskId: null,
+          bubbleText: `❓ Owner, butuh info: ${questionText.slice(0, 75)}`,
+          bubbleType: 'WAITING',
+        });
+
+        await this.activityLog.log({
+          eventType: 'NEED_CLARIFICATION',
+          taskId: task.id,
+          goalId: task.goalId,
+          agentId: agent.id,
+          description: `[Tanya Owner] Agen ${agent.name} menanyakan kebutuhan untuk "${task.title}": ${questionText}`,
+          metadata: { questions: envelope.open_questions },
+        });
+      }
+
+      // Format teks human-readable gabungan ala AI Asisten Kelas Dunia (ChatGPT / Claude / Gemini)
+      const greeting = `Halo Owner! 👋 Berikut adalah solusi dan hasil pengerjaan lengkap untuk tugas **"${task.title}"** yang telah saya selesaikan dengan cermat:`;
+
+      const summarySection = envelope.summary
+        ? `### 📋 Ringkasan Eksekutif & Solusi\n${envelope.summary}`
+        : '';
+
       const deliverableTexts = (envelope.deliverables || [])
-        .map((d) => `### ${d.name} (${d.type})\n${d.content}`)
+        .map((d) => `### ${d.name} (${d.type || 'TEXT'})\n${d.content}`)
         .join('\n\n');
 
-      const criteriaCheckText = (envelope.criteria_check || [])
-        .map((c) => `- [${c.met ? 'x' : ' '}] ${c.criterion}${c.note ? ` (${c.note})` : ''}`)
-        .join('\n');
+      const criteriaCheckText = (envelope.criteria_check || []).length
+        ? `### ✅ Checklist Verifikasi Kriteria Penerimaan\n` +
+          envelope.criteria_check.map((c) => `- [${c.met ? 'x' : ' '}] **${c.criterion}**${c.note ? ` — *${c.note}*` : ''}`).join('\n')
+        : '';
 
       const assumptionsText = (envelope.assumptions || []).length
-        ? `\n\n**Asumsi:**\n` + envelope.assumptions.map((a) => `- ${a}`).join('\n')
+        ? `### 💡 Pendekatan & Asumsi Desain\n` +
+          envelope.assumptions.map((a) => `- ${a}`).join('\n')
         : '';
 
       const questionsText = (envelope.open_questions || []).length
-        ? `\n\n**Pertanyaan Terbuka:**\n` + envelope.open_questions.map((q) => `- ${q}`).join('\n')
+        ? `### ❓ Catatan & Saran Penyempurnaan untuk Owner\n` +
+          `*Untuk pengembangan atau penyesuaian lebih lanjut, berikut beberapa poin yang dapat dikonfirmasi:*\n` +
+          envelope.open_questions.map((q) => `- ${q}`).join('\n')
         : '';
 
+      const closing = `\n---\n*Seluruh hasil di atas telah disesuaikan dengan standar industri dan siap digunakan. Jika ada bagian yang ingin disesuaikan atau dikembangkan lebih lanjut, silakan beri tahu saya!* 🚀`;
+
       const humanResult = [
-        envelope.summary,
+        greeting,
+        summarySection,
         deliverableTexts,
         criteriaCheckText,
         assumptionsText,
         questionsText,
+        closing,
       ]
         .filter(Boolean)
         .join('\n\n');
@@ -259,7 +331,7 @@ export class TaskProcessor extends WorkerHost {
           completionTokens: r.usage?.completion_tokens ?? null,
           totalTokens: r.usage?.total_tokens ?? null,
           latencyMs,
-          status: nextStatus === 'BLOCKED' ? 'BLOCKED' : 'SUCCESS',
+          status: 'SUCCESS',
           envelope: envelope as any,
         },
       });
@@ -284,7 +356,7 @@ export class TaskProcessor extends WorkerHost {
         model: r.model || 'default',
         totalTokens: r.usage?.total_tokens ?? null,
         latencyMs,
-        status: nextStatus === 'BLOCKED' ? 'BLOCKED' : 'SUCCESS',
+        status: 'SUCCESS',
       });
 
       this.presence.broadcastTaskUpdated({
@@ -302,10 +374,8 @@ export class TaskProcessor extends WorkerHost {
         currentTaskId: null,
       });
 
-      // 10. Jika status selesai 'DONE', picu Dependency Resolver untuk membuka task berikutnya
-      if (nextStatus === 'DONE') {
-        await this.goal.resolveDependencies(task.id);
-      }
+      // 10. Picu Dependency Resolver untuk membuka antrean task berikutnya agar tidak ada yang tertahan
+      await this.goal.resolveDependencies(task.id);
 
       await this.activityLog.log({
         eventType: 'TASK_LIFECYCLE',

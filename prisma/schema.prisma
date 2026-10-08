@@ -159,8 +159,8 @@ model OfficeSettings {
   routerBaseUrl   String?
   routerApiKeyEnc String?
   defaultModel    String?
-  dailyRunLimit   Int?     @default(100)
-  dailyTokenLimit Int?     @default(200000)
+  dailyRunLimit   Int?     @default(999999)
+  dailyTokenLimit Int?     @default(999999999)
   maxConcurrency  Int      @default(3)
   isPaused        Boolean  @default(false)
   isOvertime      Boolean  @default(false)

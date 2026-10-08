@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -19,7 +19,7 @@ import {
 } from './pm-planner.js';
 
 @Injectable()
-export class GoalService {
+export class GoalService implements OnModuleInit {
   private readonly logger = new Logger(GoalService.name);
 
   constructor(
@@ -29,6 +29,16 @@ export class GoalService {
     private readonly activityLog: ActivityLogService,
     @InjectQueue('office-tasks') private readonly taskQueue: Queue,
   ) {}
+
+  async onModuleInit() {
+    setTimeout(async () => {
+      try {
+        await this.unblockAllTasks();
+      } catch (err: any) {
+        this.logger.warn(`Auto unblock initial error: ${err.message}`);
+      }
+    }, 1500);
+  }
 
   /**
    * Helper mencari agent yang paling cocok dengan peran yang diminta PM
@@ -180,30 +190,36 @@ export class GoalService {
     }
 
     if (triage.category === 'AMBIGUOUS') {
-      const questions = triage.clarification_questions || ['Mohon jelaskan detail target ini lebih spesifik.'];
-      const updated = await this.db.goal.update({
-        where: { id: goal.id },
-        data: {
-          status: 'NEEDS_CLARIFICATION',
-          classification: 'AMBIGUOUS',
-          summary: triage.summary,
-          openQuestions: questions,
-        },
-      });
+      // Jika instruksi sudah memiliki teks yang cukup (>= 10 karakter), jangan membebani Owner dengan pertanyaan!
+      // Langsung ubah ke MULTI_TASK dan eksekusi dengan asumsi cerdas terbaik.
+      if (dto.text.trim().length >= 10) {
+        triage.category = 'MULTI_TASK';
+      } else {
+        const questions = triage.clarification_questions || ['Mohon jelaskan detail target ini lebih spesifik.'];
+        const updated = await this.db.goal.update({
+          where: { id: goal.id },
+          data: {
+            status: 'NEEDS_CLARIFICATION',
+            classification: 'AMBIGUOUS',
+            summary: triage.summary,
+            openQuestions: questions,
+          },
+        });
 
-      await this.presence.updatePresence(pm.id, {
-        status: 'IDLE',
-        location: 'DESK',
-        bubbleText: 'Aku butuh klarifikasi sedikit dari Owner nih...',
-        bubbleType: 'WAITING',
-      });
+        await this.presence.updatePresence(pm.id, {
+          status: 'IDLE',
+          location: 'DESK',
+          bubbleText: 'Aku butuh klarifikasi sedikit dari Owner nih...',
+          bubbleType: 'WAITING',
+        });
 
-      this.presence.broadcastOfficeStatus({
-        status: 'OPEN',
-        summary: `Goal "${title}" membutuhkan klarifikasi dari owner.`,
-      });
+        this.presence.broadcastOfficeStatus({
+          status: 'OPEN',
+          summary: `Goal "${title}" membutuhkan klarifikasi dari owner.`,
+        });
 
-      return { goal: updated, triage, openQuestions: questions, tasks: [] };
+        return { goal: updated, triage, openQuestions: questions, tasks: [] };
+      }
     }
 
     // 5. Langkah 2: Perencanaan & Dekomposisi Tugas (SINGLE_TASK atau MULTI_TASK)
@@ -239,9 +255,35 @@ export class GoalService {
       const generatedTasks: PlanTaskItem[] = [];
 
       // Heuristic parsing sesuai kata kunci target owner
-      if (lower.includes('backend') || lower.includes('endpoint') || lower.includes('api') || lower.includes('register')) {
+      if (lower.includes('content') || lower.includes('copy') || lower.includes('caption') || lower.includes('tulisan') || lower.includes('artikel') || lower.includes('naskah')) {
         generatedTasks.push({
-          key: 'T1',
+          key: `T${generatedTasks.length + 1}`,
+          title: 'Pembuatan Konten & Naskah Copywriting',
+          role: 'CONTENT',
+          description: `Susun materi konten dan penulisan kreatif untuk: ${goalText}`,
+          acceptance_criteria: ['Naskah menarik, profesional, dan persuasif', 'Sesuai dengan target audiens'],
+          deliverable: 'TEXT',
+          depends_on: [],
+          priority: 'NORMAL',
+        });
+      }
+
+      if (lower.includes('market') || lower.includes('promosi') || lower.includes('campaign') || lower.includes('iklan')) {
+        generatedTasks.push({
+          key: `T${generatedTasks.length + 1}`,
+          title: 'Strategi & Distribusi Pemasaran',
+          role: 'MARKETING',
+          description: `Rancang strategi pemasaran dan penargetan untuk: ${goalText}`,
+          acceptance_criteria: ['Target audiens jelas', 'Kanal distribusi dan penawaran ditentukan'],
+          deliverable: 'TEXT',
+          depends_on: [],
+          priority: 'NORMAL',
+        });
+      }
+
+      if (lower.includes('backend') || lower.includes('endpoint') || lower.includes('api') || lower.includes('register') || lower.includes('database')) {
+        generatedTasks.push({
+          key: `T${generatedTasks.length + 1}`,
           title: 'Implementasi API & Backend Service',
           role: 'BACKEND',
           description: `Bangun API backend untuk kebutuhan: ${goalText}`,
@@ -253,15 +295,15 @@ export class GoalService {
       }
 
       if (lower.includes('frontend') || lower.includes('form') || lower.includes('halaman') || lower.includes('tampilan') || lower.includes('ui')) {
-        const hasT1 = generatedTasks.length > 0;
+        const hasBackend = generatedTasks.some((t) => t.role === 'BACKEND');
         generatedTasks.push({
-          key: hasT1 ? 'T2' : 'T1',
+          key: `T${generatedTasks.length + 1}`,
           title: 'Implementasi Komponen UI & Frontend',
           role: 'FRONTEND',
           description: `Bangun tampilan dan integrasi antarmuka untuk: ${goalText}`,
           acceptance_criteria: ['Tampilan responsif', 'Form berfungsi dan terhubung'],
           deliverable: 'CODE',
-          depends_on: hasT1 ? ['T1'] : [],
+          depends_on: hasBackend ? ['T1'] : [],
           priority: 'NORMAL',
         });
       }
@@ -284,10 +326,10 @@ export class GoalService {
         generatedTasks.push({
           key: 'T1',
           title: `Eksekusi ${goalText.slice(0, 40)}`,
-          role: 'FRONTEND',
+          role: 'CONTENT',
           description: goalText,
           acceptance_criteria: ['Fungsi berjalan sesuai permintaan', 'Bebas error'],
-          deliverable: 'CODE',
+          deliverable: 'TEXT',
           depends_on: [],
           priority: 'NORMAL',
         });
@@ -344,8 +386,8 @@ export class GoalService {
         .map((depKey: string) => keyToTaskIdMap.get(depKey))
         .filter(Boolean) as string[];
 
-      const isBlocked = actualDependsOnIds.length > 0;
-      const initialStatus = isBlocked ? 'BLOCKED' : 'QUEUED';
+      const hasDeps = actualDependsOnIds.length > 0;
+      const initialStatus = hasDeps ? 'PENDING' : 'QUEUED';
 
       const updatedTask = await this.db.task.update({
         where: { id: ct.id },
@@ -356,7 +398,7 @@ export class GoalService {
         include: { agent: true },
       });
 
-      if (!isBlocked) {
+      if (!hasDeps) {
         unblockedTasks.push(updatedTask);
         // Masukkan task yang bebas dependensi ke antrean BullMQ
         await this.taskQueue.add(
@@ -482,19 +524,19 @@ export class GoalService {
 
     if (!completedTask) return;
 
-    // Cari seluruh task berstatus BLOCKED di kantor (atau dalam goal yang sama)
-    const blockedTasks = await this.db.task.findMany({
+    // Cari seluruh task berstatus PENDING atau BLOCKED di kantor (atau dalam goal yang sama)
+    const waitingTasks = await this.db.task.findMany({
       where: {
-        status: 'BLOCKED',
+        status: { in: ['PENDING', 'BLOCKED'] },
         ...(completedTask.goalId ? { goalId: completedTask.goalId } : {}),
       },
       include: { agent: true },
     });
 
-    for (const bt of blockedTasks) {
+    for (const bt of waitingTasks) {
       if (!bt.dependsOn || bt.dependsOn.length === 0) continue;
 
-      // Cek apakah seluruh task dalam dependsOn sudah berstatus 'DONE'
+      // Cek apakah seluruh task dalam dependsOn sudah selesai (status 'DONE' atau 'REVIEW')
       const prereqs = await this.db.task.findMany({
         where: { id: { in: bt.dependsOn } },
         select: { id: true, status: true },
@@ -502,11 +544,11 @@ export class GoalService {
 
       const allPrereqsDone =
         prereqs.length === bt.dependsOn.length &&
-        prereqs.every((p) => p.status === 'DONE');
+        prereqs.every((p) => p.status === 'DONE' || p.status === 'REVIEW');
 
       if (allPrereqsDone) {
         this.logger.log(
-          `[Dependency Resolver] Membuka blokade task ${bt.id} (${bt.title}) -> Status berubah ke QUEUED`,
+          `[Dependency Resolver] Membuka antrean task ${bt.id} (${bt.title}) -> Status berubah ke QUEUED`,
         );
 
         // Update ke QUEUED
@@ -554,12 +596,16 @@ export class GoalService {
       });
 
       const allGoalTasksDone =
-        goalTasks.length > 0 && goalTasks.every((t) => t.status === 'DONE');
+        goalTasks.length > 0 &&
+        goalTasks.every((t) => t.status === 'DONE' || t.status === 'REVIEW');
 
       if (allGoalTasksDone) {
+        const goalData = await this.db.goal.findUnique({ where: { id: completedTask.goalId } });
+        const hasOpenQuestions = goalData?.openQuestions && goalData.openQuestions.length > 0;
+        
         await this.db.goal.update({
           where: { id: completedTask.goalId },
-          data: { status: 'DONE' },
+          data: { status: hasOpenQuestions ? 'NEEDS_CLARIFICATION' : 'DONE' },
         });
 
         const { pm } = await this.getPmAgent();
@@ -644,6 +690,115 @@ export class GoalService {
         running,
         percent,
       },
+    };
+  }
+
+  /**
+   * UNBLOCK ALL TASKS:
+   * Memastikan tidak ada satupun task yang tersangkut di status BLOCKED.
+   * Mengalihkan task yang butuh info ke pertanyaan owner (REVIEW + openQuestions),
+   * dan mengaktifkan task yang siap jalan ke antrean BullMQ (QUEUED).
+   */
+  async unblockAllTasks() {
+    const blockedTasks = await this.db.task.findMany({
+      where: { status: 'BLOCKED' },
+      include: { goal: true, agent: true },
+    });
+
+    if (blockedTasks.length === 0) {
+      return { message: 'Tidak ada task yang berstatus BLOCKED', unblocked: 0 };
+    }
+
+    this.logger.log(`[Unblock Manager] Menemukan ${blockedTasks.length} task BLOCKED. Memproses migrasi...`);
+
+    let convertedToReview = 0;
+    let convertedToQueued = 0;
+    let convertedToPending = 0;
+
+    for (const task of blockedTasks) {
+      const outputEnvelope = task.outputEnvelope as any;
+      const hasOutput = Boolean(task.result || (outputEnvelope && outputEnvelope.summary));
+
+      if (hasOutput) {
+        // Jika sudah ada output kerja, langsung selesaikan sebagai DONE tanpa menahan Owner!
+        await this.db.task.update({
+          where: { id: task.id },
+          data: { status: 'DONE', finishedAt: task.finishedAt || new Date() },
+        });
+        convertedToReview++;
+
+        // Buka dependensi berikutnya
+        await this.resolveDependencies(task.id);
+      } else {
+        if (!task.dependsOn || task.dependsOn.length === 0) {
+          await this.db.task.update({
+            where: { id: task.id },
+            data: { status: 'QUEUED' },
+          });
+          await this.taskQueue.add('process-task', { taskId: task.id }, {
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: 100,
+            removeOnFail: 200,
+          });
+          convertedToQueued++;
+        } else {
+          const prereqs = await this.db.task.findMany({
+            where: { id: { in: task.dependsOn } },
+            select: { id: true, status: true },
+          });
+          const allPrereqsDone = prereqs.length === task.dependsOn.length &&
+            prereqs.every((p) => p.status === 'DONE' || p.status === 'REVIEW');
+
+          if (allPrereqsDone) {
+            await this.db.task.update({
+              where: { id: task.id },
+              data: { status: 'QUEUED' },
+            });
+            await this.taskQueue.add('process-task', { taskId: task.id }, {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 2000 },
+              removeOnComplete: 100,
+              removeOnFail: 200,
+            });
+            convertedToQueued++;
+          } else {
+            await this.db.task.update({
+              where: { id: task.id },
+              data: { status: 'PENDING' },
+            });
+            convertedToPending++;
+          }
+        }
+      }
+    }
+
+    // Cascade resolution across all DONE or REVIEW tasks
+    const allDoneOrReview = await this.db.task.findMany({
+      where: { status: { in: ['DONE', 'REVIEW'] } },
+      select: { id: true },
+    });
+    for (const t of allDoneOrReview) {
+      await this.resolveDependencies(t.id);
+    }
+
+    // Pulihkan seluruh Goal yang sempat tersangkut di status NEEDS_CLARIFICATION
+    await this.db.goal.updateMany({
+      where: { status: 'NEEDS_CLARIFICATION' },
+      data: { status: 'IN_PROGRESS', openQuestions: [] },
+    });
+
+    await this.activityLog.log({
+      eventType: 'TASK_LIFECYCLE',
+      description: `[Sistem] Menormalkan ${blockedTasks.length} task BLOCKED: ${convertedToReview} diselesaikan langsung sebagai DONE, ${convertedToQueued} ke Antrean Aktif, ${convertedToPending} ke Pending giliran.`,
+    });
+
+    return {
+      message: 'Seluruh task BLOCKED berhasil dinormalkan tanpa ada yang terblokir!',
+      total: blockedTasks.length,
+      convertedToReview,
+      convertedToQueued,
+      convertedToPending,
     };
   }
 }

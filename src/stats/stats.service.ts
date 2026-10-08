@@ -28,7 +28,7 @@ export class StatsService {
     ] = await Promise.all([
       this.db.task.count(),
       this.db.task.count({ where: { status: 'DONE' } }),
-      this.db.task.count({ where: { status: 'QUEUED' } }),
+      this.db.task.count({ where: { status: { in: ['QUEUED', 'PENDING'] } } }),
       this.db.task.count({ where: { status: 'RUNNING' } }),
       this.db.task.count({ where: { status: 'REVIEW' } }),
       this.db.task.count({ where: { status: 'BLOCKED' } }),

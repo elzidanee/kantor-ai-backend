@@ -137,3 +137,9 @@ export class ReviseTaskDto {
   @IsNotEmpty()
   feedback!: string;
 }
+
+export class ClarifyTaskDto {
+  @IsString()
+  @IsNotEmpty()
+  answer!: string;
+}

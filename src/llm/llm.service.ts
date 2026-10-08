@@ -37,6 +37,8 @@ export class LlmService {
       body: JSON.stringify({
         model: this.config.get('ROUTER_MODEL'),
         stream: false,
+        max_tokens: 4096,
+        temperature: 0.7,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },

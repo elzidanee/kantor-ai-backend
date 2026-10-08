@@ -13,6 +13,7 @@ import {
   CreateTaskDto,
   OfficeService,
   ReviseTaskDto,
+  ClarifyTaskDto,
   UpdateAgentDto,
 } from './office.service.js';
 
@@ -91,5 +92,10 @@ export class OfficeController {
   @Post('tasks/:id/revise')
   reviseTask(@Param('id') id: string, @Body() body: ReviseTaskDto) {
     return this.office.reviseTask(id, body);
+  }
+
+  @Post('tasks/:id/clarify')
+  clarifyTask(@Param('id') id: string, @Body() body: ClarifyTaskDto) {
+    return this.office.clarifyTask(id, body.answer);
   }
 }

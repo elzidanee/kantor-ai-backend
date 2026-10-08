@@ -26,6 +26,11 @@ export class GoalController {
     return this.goalService.clarifyGoal(id, dto.answer);
   }
 
+  @Post(['office/unblock-all', 'office/tasks/unblock'])
+  async unblockAll() {
+    return this.goalService.unblockAllTasks();
+  }
+
   // Alias endpoints
   @Post('goals')
   async createGoalAlias(@Body() dto: CreateGoalDto) {

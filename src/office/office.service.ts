@@ -11,13 +11,14 @@ import {
   UpdateAgentDto,
   CreateTaskDto,
   ReviseTaskDto,
+  ClarifyTaskDto,
 } from './dto/office.dto.js';
 import { AGENT_TEMPLATES, AgentTemplate } from './agent-templates.js';
 import { PresenceService } from '../presence/presence.service.js';
 import { GoalService } from '../goal/goal.service.js';
 import { ActivityLogService } from '../activity/activity-log.service.js';
 
-export { CreateAgentDto, UpdateAgentDto, CreateTaskDto, ReviseTaskDto };
+export { CreateAgentDto, UpdateAgentDto, CreateTaskDto, ReviseTaskDto, ClarifyTaskDto };
 
 @Injectable()
 export class OfficeService {
@@ -342,6 +343,93 @@ export class OfficeService {
       taskId: updated.id,
       agentId: updated.agentId,
       description: `Owner meminta revisi ke-${nextRevisionCount} untuk task "${updated.title}": "${dto.feedback}"`,
+    });
+
+    return updated;
+  }
+
+  /**
+   * KLARIFIKASI TASK DARI OWNER (Unblock & Resume Flow)
+   * Menyerap klarifikasi/arahan Owner langsung ke dalam instruksi tugas,
+   * mengubah status dari BLOCKED / REVIEW kembali ke QUEUED,
+   * dan memasukkan kembali task ke antrean BullMQ agar segera dikerjakan lagi.
+   */
+  async clarifyTask(id: string, answer: string) {
+    const task = await this.getTask(id);
+
+    // Sisipkan klarifikasi Owner secara eksplisit ke dalam deskripsi task
+    const clarificationHeader = `\n\n--- [KLARIFIKASI & ARAHAN OWNER] ---\n${answer}\n----------------------------------`;
+    const updatedDescription = `${task.description}${clarificationHeader}`;
+
+    // Kembalikan status ke QUEUED, simpan catatan klarifikasi, dan reset error & finishedAt
+    const updated = await this.db.task.update({
+      where: { id },
+      data: {
+        status: 'QUEUED',
+        description: updatedDescription,
+        revisionNotes: `Klarifikasi Owner diterima: ${answer.slice(0, 200)}`,
+        error: null,
+        finishedAt: null,
+      },
+      include: { agent: true, goal: true },
+    });
+
+    // Jika task terhubung ke Goal yang sedang berstatus NEEDS_CLARIFICATION, pulihkan status Goal
+    if (task.goalId) {
+      const parentGoal = await this.db.goal.findUnique({ where: { id: task.goalId } });
+      if (parentGoal && parentGoal.status === 'NEEDS_CLARIFICATION') {
+        await this.db.goal.update({
+          where: { id: task.goalId },
+          data: {
+            status: 'IN_PROGRESS',
+            openQuestions: [],
+          },
+        });
+      }
+    }
+
+    // Perbarui status agen yang ditugaskan agar aktif kembali
+    if (updated.agentId) {
+      await this.presence.updatePresence(updated.agentId, {
+        status: 'WORKING',
+        location: 'DESK',
+        currentTaskId: updated.id,
+        bubbleText: 'Siap Owner! Klarifikasi diterima, pengerjaan langsung saya lanjutkan...',
+        bubbleType: 'THINKING',
+      });
+    }
+
+    // Broadcast update task QUEUED ke seluruh client SSE
+    this.presence.broadcastTaskUpdated({
+      id: updated.id,
+      title: updated.title,
+      status: 'QUEUED',
+      agentId: updated.agentId,
+      priority: updated.priority,
+    });
+
+    // Enqueue kembali ke BullMQ agar worker segera memproses ulang
+    await this.taskQueue.add(
+      'process-task',
+      { taskId: updated.id },
+      {
+        attempts: 3,
+        backoff: {
+          type: 'exponential',
+          delay: 2000,
+        },
+        removeOnComplete: 100,
+        removeOnFail: 200,
+      },
+    );
+
+    await this.activityLog.log({
+      eventType: 'TASK_LIFECYCLE',
+      taskId: updated.id,
+      goalId: updated.goalId,
+      agentId: updated.agentId,
+      description: `Owner memberikan klarifikasi untuk task "${updated.title}": "${answer}". Status task dipulihkan ke QUEUED dan langsung berjalan kembali.`,
+      metadata: { clarification: answer, previousStatus: task.status },
     });
 
     return updated;
